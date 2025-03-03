@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Bus Map</title>
+
+    <!-- Leaflet.js CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+    <style>
+        #map { height: 100vh; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+<script>
+    var map = L.map('map', {
+        maxBounds: [[34.4, 32.0], [35.9, 34.6]], // Limiting the map to Cyprus
+        maxBoundsViscosity: 1.0
+    }).setView([35.1264, 33.4299], 10); // Centered on Cyprus
+
+    // Load OpenStreetMap tiles
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    var userMarker = null;
+    var vehicleMarkers = {};
+    var stopMarkers = {};
+    var userLocation = null;
+    var selectedVehicleId = null;
+    var selectedStopId = null;
+    var updateInterval = 60000; // Default to 1 minute
+    var updateTimer;
+    var online = true; //by default we try to get the real-time data
+
+    // Icons for buses and bus stops
+    var busIcon = L.icon({
+        iconUrl: 'https://upload.wikimedia.org/wikipedia/commons/e/e6/Bus-logo.svg',
+        iconSize: [25, 25]
+    });
+
+    var busStopIcon = L.icon({
+        iconUrl: 'https://upload.wikimedia.org/wikipedia/commons/3/36/Bus_stop_symbol.svg',
+        iconSize: [15, 15]
+    });
+
+
+    // Status Indicator Widget
+    var statusIndicator = document.createElement('div');
+    statusIndicator.style.position = 'fixed';
+    statusIndicator.style.top = '15px';
+    statusIndicator.style.right = '15px';
+    statusIndicator.style.padding = '5px 10px';
+    statusIndicator.style.background = '#fff';
+    statusIndicator.style.border = '1px solid #ccc';
+    statusIndicator.style.borderRadius = '5px';
+    statusIndicator.style.fontSize = '14px';
+    statusIndicator.style.zIndex = '1000';
+    statusIndicator.innerHTML = '<span id="status-light" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:red;margin-right:5px;"></span> <span id="status-text">Offline</span>';
+    document.body.appendChild(statusIndicator);
+
+    function updateStatusIndicator(online) {
+        document.getElementById("status-light").style.background = online ? "green" : "red";
+        document.getElementById("status-text").innerText = online ? "Online" : "Offline";
+        
+        // Adjust update interval
+        clearInterval(updateTimer);
+        updateInterval = online ? 10000 : 60000;
+        updateTimer = setInterval(updateVehicles, updateInterval);
+    }
+
+
+
+    function onLocationFound(e) {
+        userLocation = e.latlng;
+        var radius = e.accuracy / 2;
+
+        if (userMarker) {
+            userMarker.setLatLng(e.latlng);
+        } else {
+            userMarker = L.circle(e.latlng, {
+                color: 'blue',
+                fillColor: '#30f',
+                fillOpacity: 0.5,
+                radius: radius
+            }).addTo(map).bindPopup("You are here");
+        }
+    }
+
+	function onLocationError(e) {
+	    console.warn("Geolocation error:", e);
+	    alert("Geolocation failed. Make sure location access is enabled.");
+
+	    // Fallback to a default location (e.g., Nicosia, Cyprus)
+	    var fallbackLatLng = [35.1856, 33.3823];
+	    userMarker = L.marker(fallbackLatLng).addTo(map)
+	        .bindPopup("Fallback location: Nicosia, Cyprus")
+	        .openPopup();
+	    map.setView(fallbackLatLng, 14);
+	}
+
+
+    map.on('locationfound', onLocationFound);
+    map.on('locationerror', onLocationError);
+    map.locate({
+	    setView: true, 
+	    maxZoom: 16, 
+	    watch: true, 
+	    enableHighAccuracy: true,  // Force GPS mode
+	    timeout: 20000,            // Increase timeout to 20 seconds
+	    maximumAge: 0              // Prevent cached location usage
+	});
+
+
+    function focusOnVehicle(vehicleId) {
+        selectedVehicleId = vehicleId;
+        updateVehiclePopup(vehicleId);
+    }
+
+    function updateVehiclePopup(vehicleId) {
+        if (vehicleMarkers[vehicleId]) {
+            let popupContent = `<b>Vehicle ID:</b> ${vehicleId}`;
+            
+            if (userLocation) {
+                const vehicleLatLng = vehicleMarkers[vehicleId].getLatLng();
+                const distanceText = calculateDistance(userLocation.lat, userLocation.lng, vehicleLatLng.lat, vehicleLatLng.lng);
+                popupContent += `<br><b>Distance to you:</b> ${distanceText}`;
+            }
+            
+            vehicleMarkers[vehicleId].setPopupContent(popupContent);
+            vehicleMarkers[vehicleId].openPopup();
+        }
+    }
+
+    function updateVehicles() {
+    	console.log("Fetching vehicle positions..."); // DEBUG LOG
+        fetch('/vehicle_positions')
+            .then(response => response.json())
+            .then(data => {
+            	console.log("Vehicles API Response:", data); // DEBUG LOG
+            	online = !data.error;
+            	updateStatusIndicator(online);
+                if (data.vehicles) {
+                    data.vehicles.forEach(vehicle => {
+                        if (vehicle.latitude && vehicle.longitude) {
+                            var vehicleId = vehicle.vehicle_id || "Unknown";
+                            var routeNumber = vehicle.route_number || "N/A";
+                            var routeName = vehicle.route_name || "N/A";
+
+                            if (vehicleMarkers[vehicleId]) {
+                                vehicleMarkers[vehicleId].setLatLng([vehicle.latitude, vehicle.longitude]);
+                                vehicleMarkers[vehicleId].getPopup().setContent(
+                                    `<b>Vehicle ID:</b> ${vehicleId}<br>
+                                     <b>Route Number:</b> ${routeNumber}<br>
+                                     <b>Route Name:</b> ${routeName}<br>
+                                     <b>Updated:</b> ${new Date(vehicle.timestamp * 1000).toLocaleTimeString()}`
+                                );
+                            } else {
+                                var marker = L.marker([vehicle.latitude, vehicle.longitude], { icon: busIcon })
+                                    .addTo(map)
+                                    .bindPopup(`<b>Vehicle ID:</b> ${vehicleId}<br>
+                                                <b>Route Number:</b> ${routeNumber}<br>
+                                                <b>Route Name:</b> ${routeName}<br>
+                                                <b>Updated:</b> ${new Date(vehicle.timestamp * 1000).toLocaleTimeString()}`);
+
+                                vehicleMarkers[vehicleId] = marker;
+                            }
+                        }
+                    });
+                }
+            })
+            .catch(error => {
+                console.error("Error checking GTFS status:", error);
+                console.log("Error checking GTFS status..."); // DEBUG LOG
+                online = false
+                updateStatusIndicator(false);
+            });
+    }
+
+	function loadBusStops() {
+	    console.log("Fetching bus stops..."); // DEBUG LOG
+	    fetch('/bus_stops')
+	        .then(response => response.json())
+	        .then(data => {
+	            console.log("Raw Bus Stops API Response:", data); // DEBUG LOG
+
+	            if (!data || !data.stops) {
+	                console.error("Bus Stops API returned invalid data:", data);
+	                return;
+	            }
+
+	            data.stops.forEach(stop => {
+	                if (!stop.stop_id || !stop.stop_name || !stop.stop_lat || !stop.stop_lon) {
+	                    console.warn("Skipping stop due to missing data:", stop);
+	                    return;
+	                }
+
+	                var stopId = stop.stop_id;
+	                var stopName = stop.stop_name;
+	                var lat = parseFloat(stop.stop_lat);
+	                var lon = parseFloat(stop.stop_lon);
+
+	                if (!isNaN(lat) && !isNaN(lon)) {
+	                    var marker = L.marker([lat, lon], { icon: busStopIcon })
+	                        .addTo(map)
+	                        .bindPopup(`<b>Bus Stop:</b> ${stopName}`)
+	                        .on('click', () => focusOnBusStop(stopId));
+
+	                    stopMarkers[stopId] = marker;
+	                } else {
+	                    console.warn(`Skipping stop ${stopId} due to invalid coordinates: ${lat}, ${lon}`);
+	                }
+	            });
+	        })
+	        .catch(error => console.error("Error fetching bus stop data:", error));
+	}
+
+ 
+
+	function updateBusStopPopup(stopId) {
+	    if (stopMarkers[stopId]) {
+	        let popupContent = `<b>Bus Stop:</b> ${stopId}<br><b>Upcoming Buses:</b><br>`;
+	        if (!online) popupContent += `<i>Real-time is offline, this is schedule</i><br>`
+
+	        fetch('/bus_stops')
+	            .then(response => response.json())
+	            .then(data => {
+	                let stop = data.stops.find(s => s.stop_id === stopId);
+	                if (stop) {
+	                    stop.upcoming_buses.forEach(bus => {
+	                        var parts = bus.match(/^(.*?) - (.*?) - ([^ -]+) - (\d{2}:\d{2}:\d{2})$/);
+	                        if (parts) {
+	                            var routeNumber = parts[1];
+	                            var routeName = parts[2];
+	                            var vehicleId = parts[3];
+	                            var arrivalTime = parts[4];
+
+	                            const vehicleMarker = vehicleMarkers[vehicleId];
+	                            if (vehicleMarker) {
+	                                const stopLatLng = stopMarkers[stopId].getLatLng();
+	                                const vehicleLatLng = vehicleMarker.getLatLng();
+	                                const distanceText = calculateDistance(stopLatLng.lat, stopLatLng.lng, vehicleLatLng.lat, vehicleLatLng.lng);
+	                                popupContent += `${routeNumber} - ${routeName} - <a href="#" onclick="focusOnVehicle('${vehicleId}')">${vehicleId}</a> - ${arrivalTime} - ${distanceText}<br>`;
+	                            } else {
+	                                popupContent += `${routeNumber} - ${routeName} - <a href="#" onclick="focusOnVehicle('${vehicleId}')">${vehicleId}</a> - ${arrivalTime}<br>`;
+	                            }
+	                        }
+	                    });
+	                    stopMarkers[stopId].setPopupContent(popupContent);
+	                    stopMarkers[stopId].openPopup();
+	                }
+	            })
+	            .catch(error => console.error("Error updating bus stop popup:", error));
+	    }
+	}
+
+	function focusOnBusStop(stopId) {
+	    selectedStopId = stopId;
+	    updateBusStopPopup(stopId);
+	}
+
+
+    updateTimer = setInterval(updateVehicles, updateInterval);
+    updateVehicles();
+    loadBusStops();
+</script>
+
+</body>
+</html>
