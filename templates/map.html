@@ -36,6 +36,7 @@
     var updateInterval = 60000; // Default to 1 minute
     var updateTimer;
     var online = true; //by default we try to get the real-time data
+    var userLocated = false; // Flag to track initial location set
 
     // Icons for buses and bus stops
     var busIcon = L.icon({
@@ -75,21 +76,26 @@
 
 
 
+
     function onLocationFound(e) {
         userLocation = e.latlng;
         var radius = e.accuracy / 2;
-
-        if (userMarker) {
-            userMarker.setLatLng(e.latlng);
-        } else {
+        if (!userLocated) { // Only set view on first location detection
+            map.setView(userLocation, 16);
+            userLocated = true;
+        }
+        if (!userMarker) {
             userMarker = L.circle(e.latlng, {
                 color: 'blue',
                 fillColor: '#30f',
                 fillOpacity: 0.5,
                 radius: radius
             }).addTo(map).bindPopup("You are here");
+        } else {
+            userMarker.setLatLng(userLocation);
         }
     }
+
 
 	function onLocationError(e) {
 	    console.warn("Geolocation error:", e);
@@ -97,17 +103,28 @@
 
 	    // Fallback to a default location (e.g., Nicosia, Cyprus)
 	    var fallbackLatLng = [35.1856, 33.3823];
-	    userMarker = L.marker(fallbackLatLng).addTo(map)
-	        .bindPopup("Fallback location: Nicosia, Cyprus")
-	        .openPopup();
-	    map.setView(fallbackLatLng, 14);
+
+        if (!userLocated) { // Only set view on first location detection
+            map.setView(fallbackLatLng, 14);
+            userLocated = true;
+        }
+        if (!userMarker) {
+            userMarker = L.circle(fallbackLatLng, {
+                color: 'blue',
+                fillColor: '#30f',
+                fillOpacity: 0.5,
+                radius: 15
+            }).addTo(map).bindPopup("Fallback location: Nicosia, Cyprus");
+        } else {
+            userMarker.setLatLng(fallbackLatLng);
+        }
 	}
 
 
     map.on('locationfound', onLocationFound);
     map.on('locationerror', onLocationError);
     map.locate({
-	    setView: true, 
+	    setView: false, 
 	    maxZoom: 16, 
 	    watch: true, 
 	    enableHighAccuracy: true,  // Force GPS mode
