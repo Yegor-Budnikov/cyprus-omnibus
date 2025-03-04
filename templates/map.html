@@ -223,14 +223,16 @@
 
 	function updateBusStopPopup(stopId) {
 	    if (stopMarkers[stopId]) {
-	        let popupContent = `<b>Bus Stop:</b> ${stopId}<br><b>Upcoming Buses:</b><br>`;
-	        if (!online) popupContent += `<i>Real-time is offline, this is schedule</i><br>`
-
+	        let popupContent = ``;
+	        
 	        fetch('/bus_stops')
 	            .then(response => response.json())
 	            .then(data => {
 	                let stop = data.stops.find(s => s.stop_id === stopId);
 	                if (stop) {
+	                	stopName = stop.stop_name;
+	                	popupContent += `<b>Bus Stop:</b> ${stopName}<br><b>Upcoming Buses:</b><br>`
+	                	if (!online) popupContent += `<i>Real-time is offline, this is schedule</i><br>`
 	                    stop.upcoming_buses.forEach(bus => {
 	                        var parts = bus.match(/^(.*?) - (.*?) - ([^ -]+) - (\d{2}:\d{2}:\d{2})$/);
 	                        if (parts) {
