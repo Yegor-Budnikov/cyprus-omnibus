@@ -85,6 +85,8 @@ def get_scheduled_arrivals():
                     route_number = route_info["route_number"]
                     route_name = route_info["route_name"]
 
+                    #print(f"Info: route_id={route_id}, route_number={route_number}, route_name={route_name}")
+
                     schedule_entry = (arrival_time, f"{route_number} - {route_name} - {trip_id} - {arrival_time}")
 
                     # ✅ Convert arrival_time to timezone-aware datetime for proper sorting
@@ -138,7 +140,7 @@ def vehicle_positions():
             if entity.HasField("vehicle"):
                 vehicle = entity.vehicle
                 route_id = vehicle.trip.route_id if vehicle.HasField("trip") else None
-                route_info = routes_dict.get(route_id, {"route_short_name": "Unknown", "route_long_name": "Unknown"})
+                route_info = routes_dict.get(route_id, {"route_number": "Unknown", "route_name": "Unknown"})
 
                 vehicles.append({
                     "vehicle_id": vehicle.vehicle.id if vehicle.HasField("vehicle") else "Unknown",
@@ -146,8 +148,8 @@ def vehicle_positions():
                     "longitude": float(vehicle.position.longitude) if vehicle.HasField("position") else None,
                     "timestamp": vehicle.timestamp if vehicle.HasField("timestamp") else None,
                     "route_id": route_id,
-                    "route_number": route_info["route_short_name"],
-                    "route_name": route_info["route_long_name"]
+                    "route_number": route_info["route_number"],
+                    "route_name": route_info["route_name"]
                 })
         
         return jsonify({"vehicles": vehicles})
@@ -170,8 +172,8 @@ def bus_stops():
                 trip_update = entity.trip_update
                 route_id = trip_update.trip.route_id
                 vehicle_id = trip_update.vehicle.id if trip_update.HasField("vehicle") else "Unknown"
-                route_number = routes_dict.get(route_id, {}).get("route_short_name", "Unknown")
-                route_name = routes_dict.get(route_id, {}).get("route_long_name", "Unknown")
+                route_number = routes_dict.get(route_id, {}).get("route_number", "Unknown")
+                route_name = routes_dict.get(route_id, {}).get("route_name", "Unknown")
 
                 for stop_time in trip_update.stop_time_update:
                     stop_id = stop_time.stop_id
