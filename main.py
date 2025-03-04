@@ -1,21 +1,32 @@
 import json
 import requests
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, request
 from google.transit import gtfs_realtime_pb2
 import pytz
 import re
 import csv
 import os
 from datetime import datetime, timedelta
+import pickle
+from collections import defaultdict
+from geopy.distance import geodesic
+from scipy.spatial import KDTree
+import heapq
+import time
 
 app = Flask(__name__)
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GTFS_REALTIME_URL = "http://20.19.98.194:8328/Api/api/gtfs-realtime"
 ROUTES_FILE = "routes.json"
 STOPS_FILE = "stops.json"
 STOP_TIMES_FILES = ["stop_times.txt", "stop_times2.txt"] 
 TRIPS_FILE = "trips.json"
 CYPRUS_TZ = pytz.timezone("Asia/Nicosia")
+CACHE_FILE = os.path.join(SCRIPT_DIR, "bus_graph.pkl")
+ROUTE_CHANGE_PENALTY = 1800
+WALK_DISTANCE_THRESHOLD = 0.5
+WALK_PENALTY = 600
 
 # Load route details
 try:
@@ -195,7 +206,129 @@ def bus_stops():
             stop["upcoming_buses"] = stop_schedule.get(stop["stop_id"], [])
         return jsonify({"stops": stops_data}) 
 
+def build_bus_graph(file_path, stops_file, cache_file=CACHE_FILE, route_change_penalty=ROUTE_CHANGE_PENALTY, walk_distance_threshold=WALK_DISTANCE_THRESHOLD, walk_penalty=WALK_PENALTY):
+    try:
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+    except (FileNotFoundError, EOFError):
+        pass
+    
+    graph = defaultdict(dict)
+    stop_locations = {}
+    
+    # Process stops.txt to store stop locations
+    with open(stops_file, newline='', encoding='utf-8') as stopsfile:
+        reader = csv.DictReader(stopsfile)
+        for row in reader:
+            stop_id = int(row["stop_id"])
+            stop_lat = float(row["stop_lat"])
+            stop_lon = float(row["stop_lon"])
+            stop_locations[stop_id] = (stop_lat, stop_lon)
+    
+    with open(file_path, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        previous_row = None
+        
+        for row in reader:
+            trip_id = row["trip_id"]
+            route_id = row["route_id"]
+            stop_id = int(row["stop_id"])
+            stop_sequence = int(row["stop_sequence"])
+            arrival_time_diff = int(row["arrival_time_difference"])
+            
+            if previous_row:
+                prev_trip_id = previous_row["trip_id"]
+                prev_route_id = previous_row["route_id"]
+                prev_stop_id = int(previous_row["stop_id"])
+                prev_stop_sequence = int(previous_row["stop_sequence"])
+                
+                if trip_id == prev_trip_id and route_id == prev_route_id and stop_sequence == prev_stop_sequence + 1:
+                    if prev_stop_id not in graph:
+                        graph[prev_stop_id] = {}
+                    if stop_id not in graph[prev_stop_id]:
+                        graph[prev_stop_id][stop_id] = {"routes": set(), "weight": 0}
+                    
+                    graph[prev_stop_id][stop_id]["routes"].add(route_id)
+                    graph[prev_stop_id][stop_id]["weight"] = max(graph[prev_stop_id][stop_id]["weight"], arrival_time_diff)
+            
+            previous_row = row
+    
+    # Optimize walking edges using KDTree
+    stop_ids = list(stop_locations.keys())
+    stop_coords = [stop_locations[stop_id] for stop_id in stop_ids]
+    tree = KDTree(stop_coords)
+    
+    for i, stop_id in enumerate(stop_ids):
+        neighbors = tree.query_ball_point(stop_coords[i], walk_distance_threshold / 111, p=2)
+        
+        for j in neighbors:
+            neighbor_id = stop_ids[j]
+            if stop_id != neighbor_id:
+                distance = geodesic(stop_locations[stop_id], stop_locations[neighbor_id]).km
+                if distance <= walk_distance_threshold:
+                    if stop_id not in graph:
+                        graph[stop_id] = {}
+                    if neighbor_id not in graph:
+                        graph[neighbor_id] = {}
+                    
+                    graph[stop_id][neighbor_id] = {"routes": {"Walk"}, "walk_penalty": walk_penalty}
+                    graph[neighbor_id][stop_id] = {"routes": {"Walk"}, "walk_penalty": walk_penalty}
+    
+    with open(cache_file, "wb") as f:
+        pickle.dump((dict(graph), route_change_penalty), f)
+    
+    return graph, route_change_penalty
+
+def find_shortest_route(graph, start, end, route_change_penalty, walk_penalty):
+    priority_queue = [(0, start, None, [])]
+    visited = {}
+    
+    while priority_queue:
+        cost, stop, current_route, path = heapq.heappop(priority_queue)
+        
+        if stop in visited and visited[stop] <= cost:
+            continue
+        visited[stop] = cost
+        
+        if path and path[-1][2] == stop:
+            continue  # Prevent adding steps that don't change stops
+        
+        path.append([current_route if current_route else "walk", path[-1][2] if path else start, stop])
+        
+        if path[-1][1] == path[-1][2]:
+            path.pop()  # Remove self-referential steps
+        
+        if stop == end:
+            return path
+        
+        for neighbor, details in graph.get(stop, {}).items():
+            for route in details["routes"]:
+                extra_cost = walk_penalty if route == "Walk" else details.get("weight", 0)
+                if route != "Walk" and current_route and route != current_route:
+                    extra_cost += route_change_penalty
+                heapq.heappush(priority_queue, (cost + extra_cost, neighbor, route, path[:]))
+    
+    return []
+
+graph, route_change_penalty = build_bus_graph("all_trips.txt", "stops.txt")
+
+@app.route("/find_route", methods=["GET"])
+def find_route():
+    start = int(request.args.get("start"))
+    end = int(request.args.get("end"))
+    
+    if start not in graph or end not in graph:
+        return jsonify({"error": "Invalid stop IDs"}), 400
+    
+    path = find_shortest_route(graph, start, end, route_change_penalty, WALK_PENALTY)
+    
+    if not path:
+        return jsonify({"error": "No route found"}), 404
+    
+    return jsonify({"route": path})
+
+
 if __name__ == '__main__':
     import os
-    port = int(os.environ.get("PORT", 5000))  # Use PORT from Render
+    port = int(os.environ.get("PORT", 5001))  # Use PORT from Render
     app.run(host="0.0.0.0", port=port)

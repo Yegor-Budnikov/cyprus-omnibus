@@ -3,18 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-Time Bus Map</title>
-
-    <!-- Leaflet.js CSS & JS -->
+    <title>Bus Route Finder</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-
     <style>
-        #map { height: 100vh; }
+        #map { height: 80vh; }
+        #controls {
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 10px;
+        }
+        .step {
+            cursor: pointer;
+            padding: 5px;
+            border-bottom: 1px solid #ccc;
+        }
+        .step:hover { background-color: #f0f0f0; }
+        #status {
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
+    <div id="controls">
+        <label>Start Stop ID: <input type="text" id="startStop"></label>
+        <label>End Stop ID: <input type="text" id="endStop"></label>
+        <button onclick="findRoutes()">Find Routes</button>
+        <button onclick="clearMap()">Clear</button>
+        <div id="status" title="Checking status...">Status: <span id="statusText">Checking...</span></div>
+    </div>
     <div id="map"></div>
+    <div id="steps"></div>
 
 <script>
     var map = L.map('map', {
@@ -74,7 +93,26 @@
         updateTimer = setInterval(updateVehicles, updateInterval);
     }
 
-
+    function updateStatus() {
+        fetch("/vehicle_positions")
+            .then(response => response.json())
+            .then(data => {
+                if (data.vehicles) {
+                    let busCount = data.vehicles.length;
+                    document.getElementById("statusText").innerText = "Online";
+                    document.getElementById("status").title = `Active Buses: ${busCount}`;
+                    	    updateVehicles();
+    						loadBusStops();
+                } else {
+                    document.getElementById("statusText").innerText = "Offline";
+                    document.getElementById("status").title = "No active buses";
+                }
+            })
+            .catch(() => {
+                document.getElementById("statusText").innerText = "Offline";
+                document.getElementById("status").title = "No connection to bus data";
+            });
+    }
 
 
     function onLocationFound(e) {
@@ -297,9 +335,93 @@
 	}
 
 
-    updateTimer = setInterval(updateVehicles, updateInterval);
-    updateVehicles();
-    loadBusStops();
+        var routeLayers = [];
+        var stopData = {};
+
+        function fetchStops(callback) {
+            fetch(`/bus_stops`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.stops) {
+                        stopData = data.stops.reduce((acc, stop) => {
+                            acc[stop.stop_id.toString()] = stop;
+                            return acc;
+                        }, {});
+                    }
+                    if (callback) callback();
+                })
+                .catch(error => console.error("Error fetching bus stops:", error));
+        }
+
+        function findRoutes() {
+            let start = document.getElementById("startStop").value;
+            let end = document.getElementById("endStop").value;
+            if (!start || !end) {
+                alert("Please enter valid stop IDs.");
+                return;
+            }
+            fetch(`/find_route?start=${start}&end=${end}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert("Error: " + data.error);
+                        return;
+                    }
+                    console.log("Route Data:", data.route); // Debugging Log
+                    fetchStops(() => displayRoute(data.route));
+                })
+                .catch(error => console.error("Error fetching route:", error));
+        }
+
+        function displayRoute(route) {
+            clearMap();
+            let stepsDiv = document.getElementById("steps");
+            stepsDiv.innerHTML = "";
+
+            route.forEach((step, index) => {
+                let [routeId, stopA, stopB] = step;
+                let stepElement = document.createElement("div");
+                stepElement.className = "step";
+                stepElement.innerText = `${routeId}: ${stopA} -> ${stopB}`;
+                stepElement.onclick = () => focusStep(stopA, stopB);
+                stepsDiv.appendChild(stepElement);
+
+                drawRouteSegment(routeId, stopA, stopB);
+            });
+        }
+
+        function drawRouteSegment(routeId, stopA, stopB) {
+            let coordA = stopData[stopA];
+            let coordB = stopData[stopB];
+
+            if (coordA && coordB) {
+                let lineStyle = routeId === "Walk" ? { color: "blue", dashArray: "5,5" } : { color: "red" };
+                let segment = L.polyline([[coordA.stop_lat, coordA.stop_lon], [coordB.stop_lat, coordB.stop_lon]], lineStyle).addTo(map);
+                routeLayers.push(segment);
+            } else {
+                console.error("Missing stop coordinates:", stopA, stopB);
+            }
+        }
+
+        function focusStep(stopA, stopB) {
+            let coordA = stopData[stopA];
+            let coordB = stopData[stopB];
+            if (coordA && coordB) {
+                map.fitBounds([[coordA.stop_lat, coordA.stop_lon], [coordB.stop_lat, coordB.stop_lon]]);
+            } else {
+                console.error("Focus stops not found:", stopA, stopB);
+            }
+        }
+
+        function clearMap() {
+            routeLayers.forEach(layer => map.removeLayer(layer));
+            routeLayers = [];
+            document.getElementById("steps").innerHTML = "";
+        }
+
+
+    updateStatus();
+    setInterval(updateStatus, 30000); // Refresh status every 30 seconds
 </script>
 
 </body>
