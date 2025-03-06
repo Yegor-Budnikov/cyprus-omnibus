@@ -300,7 +300,7 @@
 	                let stop = data.stops.find(s => s.stop_id === stopId);
 	                if (stop) {
 	                	stopName = stop.stop_name;
-	                	popupContent += `<b>Bus Stop:</b> ${stopName}<br><b>Upcoming Buses:</b><br>`
+	                	popupContent += `<b>Bus Stop:</b> ${stopName} (${stopId})<br><b>Upcoming Buses:</b><br>`
 	                	if (!online) popupContent += `<i>Real-time is offline, this is schedule</i><br>`
 	                    stop.upcoming_buses.forEach(bus => {
 	                        var parts = bus.match(/^(.*?) - (.*?) - ([^ -]+) - (\d{2}:\d{2}:\d{2})$/);
@@ -377,20 +377,28 @@
             clearMap();
             let stepsDiv = document.getElementById("steps");
             stepsDiv.innerHTML = "";
+            let routeBounds = []; // Collect all points before zooming
 
             route.forEach((step, index) => {
-                let [routeId, stopA, stopB] = step;
+                let [routeId, stopA, stopB] = step.map(String);
                 let stepElement = document.createElement("div");
                 stepElement.className = "step";
                 stepElement.innerText = `${routeId}: ${stopA} -> ${stopB}`;
                 stepElement.onclick = () => focusStep(stopA, stopB);
                 stepsDiv.appendChild(stepElement);
-
-                drawRouteSegment(routeId, stopA, stopB);
+                
+                drawRouteSegment(routeId, stopA, stopB, routeBounds);
             });
+
+            // Fit map to full route after all segments are drawn
+            setTimeout(() => {
+                if (routeBounds.length > 0) {
+                    map.fitBounds(routeBounds);
+                }
+            }, 500);
         }
 
-        function drawRouteSegment(routeId, stopA, stopB) {
+        function drawRouteSegment(routeId, stopA, stopB, routeBounds) {
             let coordA = stopData[stopA];
             let coordB = stopData[stopB];
 
@@ -398,6 +406,7 @@
                 let lineStyle = routeId === "Walk" ? { color: "blue", dashArray: "5,5" } : { color: "red" };
                 let segment = L.polyline([[coordA.stop_lat, coordA.stop_lon], [coordB.stop_lat, coordB.stop_lon]], lineStyle).addTo(map);
                 routeLayers.push(segment);
+                routeBounds.push([coordA.stop_lat, coordA.stop_lon], [coordB.stop_lat, coordB.stop_lon]);
             } else {
                 console.error("Missing stop coordinates:", stopA, stopB);
             }
@@ -421,7 +430,7 @@
 
 
     updateStatus();
-    setInterval(updateStatus, 30000); // Refresh status every 30 seconds
+    setInterval(updateStatus, 10000); // Refresh status every 30 seconds
 </script>
 
 </body>

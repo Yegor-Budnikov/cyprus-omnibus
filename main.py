@@ -26,7 +26,7 @@ CYPRUS_TZ = pytz.timezone("Asia/Nicosia")
 CACHE_FILE = os.path.join(SCRIPT_DIR, "bus_graph.pkl")
 ROUTE_CHANGE_PENALTY = 1800
 WALK_DISTANCE_THRESHOLD = 0.5
-WALK_PENALTY = 600
+WALK_PENALTY = 1000
 
 # Load route details
 try:
@@ -220,7 +220,7 @@ def build_bus_graph(file_path, stops_file, cache_file=CACHE_FILE, route_change_p
     with open(stops_file, newline='', encoding='utf-8') as stopsfile:
         reader = csv.DictReader(stopsfile)
         for row in reader:
-            stop_id = int(row["stop_id"])
+            stop_id = str(row["stop_id"])  # Ensure stop_id is string
             stop_lat = float(row["stop_lat"])
             stop_lon = float(row["stop_lon"])
             stop_locations[stop_id] = (stop_lat, stop_lon)
@@ -232,24 +232,24 @@ def build_bus_graph(file_path, stops_file, cache_file=CACHE_FILE, route_change_p
         for row in reader:
             trip_id = row["trip_id"]
             route_id = row["route_id"]
-            stop_id = int(row["stop_id"])
+            stop_id = str(row["stop_id"])  # Ensure stop_id is string
             stop_sequence = int(row["stop_sequence"])
             arrival_time_diff = int(row["arrival_time_difference"])
             
             if previous_row:
                 prev_trip_id = previous_row["trip_id"]
                 prev_route_id = previous_row["route_id"]
-                prev_stop_id = int(previous_row["stop_id"])
+                prev_stop_id = str(previous_row["stop_id"])  # Ensure stop_id is string
                 prev_stop_sequence = int(previous_row["stop_sequence"])
                 
                 if trip_id == prev_trip_id and route_id == prev_route_id and stop_sequence == prev_stop_sequence + 1:
                     if prev_stop_id not in graph:
                         graph[prev_stop_id] = {}
                     if stop_id not in graph[prev_stop_id]:
-                        graph[prev_stop_id][stop_id] = {"routes": set(), "weight": 0}
+                        graph[prev_stop_id][stop_id] = {"routes": set(), "weight": 1000000}
                     
                     graph[prev_stop_id][stop_id]["routes"].add(route_id)
-                    graph[prev_stop_id][stop_id]["weight"] = max(graph[prev_stop_id][stop_id]["weight"], arrival_time_diff)
+                    graph[prev_stop_id][stop_id]["weight"] = min(graph[prev_stop_id][stop_id]["weight"], arrival_time_diff)
             
             previous_row = row
     
@@ -260,26 +260,53 @@ def build_bus_graph(file_path, stops_file, cache_file=CACHE_FILE, route_change_p
     
     for i, stop_id in enumerate(stop_ids):
         neighbors = tree.query_ball_point(stop_coords[i], walk_distance_threshold / 111, p=2)
-        
+
         for j in neighbors:
             neighbor_id = stop_ids[j]
             if stop_id != neighbor_id:
                 distance = geodesic(stop_locations[stop_id], stop_locations[neighbor_id]).km
                 if distance <= walk_distance_threshold:
+                    # ✅ Ensure both stops exist in the graph
                     if stop_id not in graph:
                         graph[stop_id] = {}
                     if neighbor_id not in graph:
                         graph[neighbor_id] = {}
-                    
-                    graph[stop_id][neighbor_id] = {"routes": {"Walk"}, "walk_penalty": walk_penalty}
-                    graph[neighbor_id][stop_id] = {"routes": {"Walk"}, "walk_penalty": walk_penalty}
+                    if neighbor_id not in graph[stop_id]:
+                        graph[stop_id][neighbor_id] = {"routes": set(), "walk_penalty": walk_penalty}
+                    if stop_id not in graph[neighbor_id]:
+                        graph[neighbor_id][stop_id] = {"routes": set(), "walk_penalty": walk_penalty}
+
+                    # ✅ Now it's safe to add "Walk" to the routes
+                    graph[stop_id][neighbor_id]["routes"].add("Walk")
+                    graph[neighbor_id][stop_id]["routes"].add("Walk")
+
+ 
     
     with open(cache_file, "wb") as f:
         pickle.dump((dict(graph), route_change_penalty), f)
     
+    #print(graph[1311])
+    # Convert graph to a JSON-safe format (convert sets to lists)
+    json_graph = {
+        stop: {neighbor: {"routes": list(data["routes"]), "weight": data.get("weight", "INF")}
+               for neighbor, data in neighbors.items()}
+        for stop, neighbors in graph.items()
+    }
+
+    # Save as JSON
+    json_cache_file = cache_file.replace(".pkl", ".json")  # Change .pkl to .json
+    with open(json_cache_file, "w", encoding="utf-8") as f:
+        json.dump({"graph": json_graph, "route_change_penalty": route_change_penalty}, f, indent=4)
+
     return graph, route_change_penalty
 
+
 def find_shortest_route(graph, start, end, route_change_penalty, walk_penalty):
+    
+    if start not in graph or end not in graph:
+        print(f"Error: One or both stops not found in graph: {start}, {end}")
+        return []
+    
     priority_queue = [(0, start, None, [])]
     visited = {}
     
@@ -289,9 +316,6 @@ def find_shortest_route(graph, start, end, route_change_penalty, walk_penalty):
         if stop in visited and visited[stop] <= cost:
             continue
         visited[stop] = cost
-        
-        if path and path[-1][2] == stop:
-            continue  # Prevent adding steps that don't change stops
         
         path.append([current_route if current_route else "walk", path[-1][2] if path else start, stop])
         
@@ -303,19 +327,27 @@ def find_shortest_route(graph, start, end, route_change_penalty, walk_penalty):
         
         for neighbor, details in graph.get(stop, {}).items():
             for route in details["routes"]:
-                extra_cost = walk_penalty if route == "Walk" else details.get("weight", 0)
-                if route != "Walk" and current_route and route != current_route:
-                    extra_cost += route_change_penalty
+                if route == "Walk":
+                    if current_route and route != current_route:
+                        extra_cost = 3 * walk_penalty
+                    else:
+                        extra_cost = walk_penalty
+                else:
+                    extra_cost = details.get("weight", 0)
+                    if current_route and current_route != "Walk" and route != current_route:
+                        extra_cost += route_change_penalty
                 heapq.heappush(priority_queue, (cost + extra_cost, neighbor, route, path[:]))
     
+    print(f"No valid path found from {start} to {end}")
     return []
+
 
 graph, route_change_penalty = build_bus_graph("all_trips.txt", "stops.txt")
 
 @app.route("/find_route", methods=["GET"])
 def find_route():
-    start = int(request.args.get("start"))
-    end = int(request.args.get("end"))
+    start = str(request.args.get("start"))
+    end = str(request.args.get("end"))
     
     if start not in graph or end not in graph:
         return jsonify({"error": "Invalid stop IDs"}), 400
