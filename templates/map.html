@@ -30,7 +30,6 @@
         <label>End Stop ID: <input type="text" id="endStop"></label>
         <button onclick="findRoutes()">Find Routes</button>
         <button onclick="clearMap()">Clear</button>
-        <div id="status" title="Checking status...">Status: <span id="statusText">Checking...</span></div>
     </div>
     <div id="map"></div>
     <div id="steps"></div>
@@ -91,27 +90,6 @@
         clearInterval(updateTimer);
         updateInterval = online ? 10000 : 60000;
         updateTimer = setInterval(updateVehicles, updateInterval);
-    }
-
-    function updateStatus() {
-        fetch("/vehicle_positions")
-            .then(response => response.json())
-            .then(data => {
-                if (data.vehicles) {
-                    let busCount = data.vehicles.length;
-                    document.getElementById("statusText").innerText = "Online";
-                    document.getElementById("status").title = `Active Buses: ${busCount}`;
-                    	    updateVehicles();
-    						loadBusStops();
-                } else {
-                    document.getElementById("statusText").innerText = "Offline";
-                    document.getElementById("status").title = "No active buses";
-                }
-            })
-            .catch(() => {
-                document.getElementById("statusText").innerText = "Offline";
-                document.getElementById("status").title = "No connection to bus data";
-            });
     }
 
 
@@ -214,6 +192,8 @@
             	online = !data.error;
             	updateStatusIndicator(online);
                 if (data.vehicles) {
+                	let busCount = data.vehicles.length;
+                    document.getElementById("status-text").title = `Active Buses: ${busCount}`;
                     data.vehicles.forEach(vehicle => {
                         if (vehicle.latitude && vehicle.longitude) {
                             var vehicleId = vehicle.vehicle_id || "Unknown";
@@ -380,10 +360,10 @@
             let routeBounds = []; // Collect all points before zooming
 
             route.forEach((step, index) => {
-                let [routeId, stopA, stopB] = step.map(String);
+                let [routeId, stopA, stopB, route_number, route_name, weight] = step.map(String);
                 let stepElement = document.createElement("div");
                 stepElement.className = "step";
-                stepElement.innerText = `${routeId}: ${stopA} -> ${stopB}`;
+                stepElement.innerText = `${route_number}: ${route_name}: ${stopA} -> ${stopB} (${weight})`;
                 stepElement.onclick = () => focusStep(stopA, stopB);
                 stepsDiv.appendChild(stepElement);
                 
@@ -428,9 +408,9 @@
             document.getElementById("steps").innerHTML = "";
         }
 
-
-    updateStatus();
-    setInterval(updateStatus, 10000); // Refresh status every 30 seconds
+    loadBusStops();
+    updateVehicles();
+    setInterval(updateVehicles, 5000); // Refresh status every 30 seconds
 </script>
 
 </body>

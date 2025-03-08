@@ -308,17 +308,40 @@ def find_shortest_route(graph, start, end, route_change_penalty, walk_penalty):
         return []
     
     priority_queue = [(0, start, None, [])]
-    visited = {}
-    
+    visited = defaultdict(lambda: defaultdict(lambda: float('inf')))  # visited[stop][current_route] = cost
+
+
     while priority_queue:
         cost, stop, current_route, path = heapq.heappop(priority_queue)
         
-        if stop in visited and visited[stop] <= cost:
+        # Skip if a cheaper path to this (stop, route) already exists
+        if stop in visited and cost >= visited[stop][current_route]:
             continue
-        visited[stop] = cost
-        
-        path.append([current_route if current_route else "walk", path[-1][2] if path else start, stop])
-        
+        visited[stop][current_route] = cost
+
+        route_number = None
+        route_name = None
+        if current_route:
+            route_info = routes_dict.get(current_route, {"route_number": "Unknown", "route_name": "Unknown"})
+            route_number = route_info["route_number"]
+            route_name = route_info["route_name"]
+
+
+        previous_stop = path[-1][2] if path else start
+
+        # Get edge weight from graph (default to 0 if missing)
+        edge_weight = graph.get(previous_stop, {}).get(stop, {}).get("weight", 0)
+
+        path.append([
+            current_route if current_route else "walk",
+            previous_stop,
+            stop,
+            route_number,
+            route_name,
+            edge_weight  # ✅ Add weight to the response
+        ])
+
+
         if path[-1][1] == path[-1][2]:
             path.pop()  # Remove self-referential steps
         
